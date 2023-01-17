@@ -1,0 +1,17 @@
+# 1. 三者之间的关系概述
+
+HDFS的NameNode记录文件元数据, DataNode存储文件数据. 当client向Yarn的ResourceManager请求执行任务时, Yarn会在NodeManager部署Container, 容器中生成ApplicationMaster, ApplicationMaster会向RM申请, 在NodeManager上部署Container执行MapTask和ReduceTask, 执行完ReduceTask后, 会更新HDFS的NameNode元数据, 同时SecondaryNameNode会更新备份的元数据.
+
+# 2. 大数据技术生态体系
+
+Oozie任务调度     Azkaban任务调度                              任务调度层
+
+Hive数据查询       Spark Mlib、Sql     Spark Streaming Flink
+MapReduce离线计算  Spark Core内存计算   实时计算                数据计算层
+
+YARN              YARN                                       资源管理层
+HDFS文件存储       HDFS、HBase非关系型数据库  Kafka消息队列       数据存储层
+Sqoop数据传递      Flume日志收集         Kafka消息队列           数据传输层
+数据库(结构化数据)  文件日志(半结构化数据)  视频、ppt(非结构化数据)  数据来源层
+
+Zookeeper负责整个数据平台的配置和调度

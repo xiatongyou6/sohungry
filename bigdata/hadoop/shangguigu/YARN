@@ -1,0 +1,4 @@
+# 1. 概述
+
+Yet Another Resource Negotiator, 另一种资源协调者, 是Hadoop的资源管理器. Yarn的架构主要分为ResourceManager, NodeManager, ApplicationMaster和Container, RM负责整个集群资源(cpu和内存)的调度, NM负责单节点资源的调度, AM是负责单个任务的运行, Container封装了任务运行所需要的资源, 包括内存、cpu、磁盘、网络等.
+
