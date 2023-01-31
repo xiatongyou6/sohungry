@@ -1,0 +1,17 @@
+# 1. MapReduce概述
+
+MapReduce是一个分布式运算程序的编程框架, 核心功能是将用户编写的业务逻辑代码和自带默认组建整合成一个完整的分布式运算程序, 并发运行在一个Hadoop集群上.
+
+# 2. MapReduce编程规范
+
+Mapper阶段: map()方法对每一个<k, v>调用一次;
+Reducer阶段: ReduceTask进程对每一组相同k的<k, v>组调用一次reduce()方法.
+Driver阶段: 相当于YARN集群的客户端, 用于提交我们整个程序到YARN集群, 提交的是封装了MapReduce程序相关运行参数的job对象.
+
+# 3. 切片
+
+框架默认的TextInputFormat切片机制是对任务按文件规划切片, 不管文件多小, 都会是一个单独的切片, 都会交给一个MapTask, 这样在有大量小文件场景下, 就会产生大量的MapTask, 处理效率及其低下. CombineTextInputFormat用于小文件过多的场景, 它可以将多个小文件从逻辑上规划到一个切片中, 这样多个小文件就可以交给一个MapTask处理.
+
+# 4. MapReduce工作流程
+
+客户端在提交Job前会对待处理的数据根据参数配置, 形成一个任务分配的规划, 并提交至Yarn的RM. Yarn根据规划计算出MapTask的数量. MapTask通过InputFormat读取数据并进行逻辑计算. 逻辑计算产出的kv数据进入环形缓冲区. 环形缓冲区分为元数据和真实数据两部分, 环形缓冲区一般100M, 待写入数据达到容量的80%后便开始反向写入, 同时环形缓冲区上的数据溢写到磁盘, 按照分区存储并进行快速排序. 然后对各分区进行归并排序. 在此过程中, 存在Combiner合并的优化方式. 所有的MapTask任务完成后, Yarn的MrAppMaster启动相应数量的ReduceTask, 并告知ReduceTask处理的数据范围(数据分区). ReduceTask下载数据至本地, 并合并文件, 归并排序. Reduce逻辑处理后, 通过OutPutFormat输出. 
