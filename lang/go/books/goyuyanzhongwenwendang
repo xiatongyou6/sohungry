@@ -1,0 +1,236 @@
+# 函数
+
+## 闭包、递归
+
+闭包是引用了自由变量的函数,这个被引用的自由变量将和这个函数一同存在,即使已经离开了创造它的环境也不例外.所以,闭包是由函数和与其相关的引用环境组合而成的实体.闭包在运行时可以有多个实例,不同的引用环境和相同的函数组合可以产生不同的实例.
+
+```go
+package main
+
+import "fmt"
+
+// 闭包使得垃圾回收机制不会回收a()所占用的资源
+func a() func() int {
+	i := 0 // 自由变量
+
+	/*
+	 * 引用了自由变量的函数
+	 */
+	b := func() int {
+		i++
+		fmt.Println(i)
+		return i
+	}
+
+	return b
+}
+
+func main() {
+	/*
+	 * 不同的引用环境和相同的函数可以产生不同的实例
+	 */
+	c := a()
+	c()
+	c()
+	c()
+	c1 := a()
+	c1()
+	c1()
+	c1()
+	c1()
+}
+
+/*
+ * output:
+ */
+// 1
+// 2
+// 3
+// 1
+// 2
+// 3
+// 4
+
+```
+
+
+闭包复制的是原对象指针,这能解释延迟引用现象.
+
+```go
+package main
+
+import "fmt"
+
+func test() func() {
+    x := 100
+    fmt.Printf("x (%p) = %d\n", &x, x)
+
+    return func() {
+        fmt.Printf("x (%p) = %d\n", &x, x)
+    }
+}
+
+func main() {
+    f := test()
+    f()
+}
+
+//    x (0xc42007c008) = 100
+//    x (0xc42007c008) = 100
+```
+
+在汇编层 ，test 实际返回的是 FuncVal 对象，其中包含了匿名函数地址、闭包对象指针。当调 匿名函数时，只需以某个寄存器传递该对象即可。
+
+
+## 延迟调用
+
+defer碰上闭包, 函数正常执行,由于闭包用到的变量 i 在执行的时候已经变成4,所以输出全都是4.
+
+```go
+package main
+
+import "fmt"
+
+func main() {
+    var whatever [5]struct{}
+    for i := range whatever {
+        defer func() { fmt.Println(i) }()
+    }
+} 
+
+//4
+//4
+//4
+//4
+//4
+```
+
+defer后面的语句在执行的时候，函数调用的参数会被保存起来，但是不执行。也就是复制了一份。某一类型定义了方法之后, go语言并没有把这个明确写出来的this指针当作参数来看待.
+
+```go
+/*
+ * go语言并没有把这个明确写出来的struct的this指针当作参数来看待
+ */
+package main
+
+import "fmt"
+
+type Test struct {
+	name string
+}
+
+func (t *Test) Close() {
+	fmt.Println(t.name, " closed")
+}
+func main() {
+	ts := []Test{{"a"}, {"b"}, {"c"}}
+	for _, t := range ts {
+		defer t.Close()
+	}
+}
+
+/*
+ * output
+ */
+//  c  closed
+//  c  closed
+//  c  closed
+
+
+/*
+ * defer后面的语句在执行的时候，函数调用的参数会被保存起来，但是不执行
+ */
+package main
+
+import "fmt"
+
+type Test struct {
+	name string
+}
+
+func (t *Test) Close() {
+	fmt.Println(t.name, " closed")
+}
+func Close(t Test) {
+	t.Close()
+}
+func main() {
+	ts := []Test{{"a"}, {"b"}, {"c"}}
+	for _, t := range ts {
+		defer Close(t)
+	}
+}
+
+/*
+ * output
+ */
+//  c  closed
+//  b  closed
+//  a  closed
+
+```
+
+延迟调用参数在注册时求值或复制; 可以用指针或闭包延迟读取.
+
+```go
+package main
+
+func test() {
+	x, y := 10, 20
+
+	defer func(i int) {
+		println("defer:", i, y) // y 闭包引用,延迟读取
+	}(x) // x 被复制
+
+	x += 10
+	y += 100
+	println("x =", x, "y =", y)
+}
+
+func main() {
+	test()
+}
+
+/*
+ * output:
+ */
+// x = 20 y = 120
+// defer: 10 120
+
+```
+
+defer与closure, 如果defer后面跟的不是一个closure, 最后执行的时候我们得到的并不是最新值.
+
+```go
+package main
+
+import (
+	"errors"
+	"fmt"
+)
+
+func foo(a, b int) (i int, err error) {
+	defer fmt.Printf("first defer err %v\n", err)
+	defer func(err error) { fmt.Printf("second defer err %v\n", err) }(err)
+	defer func() { fmt.Printf("third defer err %v\n", err) }()
+	if b == 0 {
+		err = errors.New("divided by zero!")
+		return
+	}
+
+	i = a / b
+	return
+}
+
+func main() {
+	foo(2, 0)
+}
+
+/*
+ * output:
+ */
+//  third defer err divided by zero!
+//  second defer err <nil>
+//  first defer err <nil>
+
+```
