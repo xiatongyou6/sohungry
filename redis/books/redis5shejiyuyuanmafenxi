@@ -40,3 +40,168 @@ sdshdr5只负责存储小于32bytes的字符串. 一般情况下, 小字符串�
 
 对于有序集合的底层实现, 可以使用数组、链表、平衡树等结构. 数组不便于元素的插入和删除, 链表的查询效率低, 需要遍历所有元素. 平衡树或红黑树等结构虽然效率高但是实现复杂. redis采用了一种新型的数据结构-跳跃表. 跳跃表的效率堪比红黑树, 然而实现却远比红黑树简单.
 
+跳跃表每个节点维护了多个指向其他节点的指针, 所以在跳跃表进行查找、插入、删除操作时可以跳过一些节点, 快速找到操作需要的节点. 归根结底, 跳跃表是以牺牲空间的形式来达到快速查找的目的.
+
+## 3.1 跳跃表节点与结构
+
+1. 跳跃表节点zskiplistNode结构体
+```c
+typedef struct zskiplistNode {
+	sds ele;
+	double score;
+	struct zskiplistNode *backward;
+	struct zskiplistLevel {
+		struct zskiplistNode *forward;
+		unsigned int span;
+	} level[];
+} zskiplistNode;
+```
+
+2. 跳跃表结构来管理节点
+```c
+typedef struct zskiplist {
+	struct zskiplistNode *header, *tail;
+	unsigned long length;
+	int level;
+} zskiplist;
+```
+
+## 3.4 跳跃表的应用
+
+redis中跳跃表主要应用于有序集合的底层实现(有序集合的另一种实现方式为压缩列表)
+
+redis配置文件中关于有序集合底层实现的两个配置:
+
+* zset-max-ziplist-entries 128: zset采用压缩列表时元素个数最大值;
+* zset-max-ziplist-value 64: zset采用压缩列表时, 每个元素的字符串长度最大值.
+
+zset在插入第一个元素时, 会判断下面两种条件:zset-max-ziplist-entries的值是否等于0; zset-max-ziplist-value小于要插入元素的字符串长度. 满足任一条件redis就会采用跳跃表作为底层实现, 否则采用压缩列表作为底层实现方式.
+
+一般情况下, 由于不会将zset-max-ziplist-entries配置成0, 元素的字符串长度也不会太长, 所以在创建有序集合时, 默认使用压缩列表作为底层实现. zset在插入新元素时, 会判断zset中的个数是否大于zset-max-ziplist-entries或插入元素的字符串长度大于zset-max-ziplist-value. 如果满足任一条件, redis便会将zset的底层实现由压缩列表转为跳远表.zset在转为跳跃表之后, 即使元素背逐渐删除, 也不会重新转为压缩列表.
+
+# 4. 压缩列表
+
+压缩列表ziplist本质上就是一个字节数组, 是redis为了节约内存而设计的一种线性数据结构, 可以包含多个元素, 每个元素可以是一个字节数组或一个整数. redis的有序集合、散列和列表都直接或者间接使用了压缩列表. 当有序集合或散列表的元素个数比较少, 且元素都是短字符串时, redis便使用压缩列表作为其底层数据存储结构. 列表使用快速链表数据结构存储, 而快速链表就是双向链表与压缩列表的组合.
+
+## 4.1 压缩列表的存储结构
+
+压缩列表由zlbytes、zltail、zllen、entryX以及zlend字段组成. 分别表示:
+* 压缩列表的字节长度, 占四个字节
+* 压缩列表尾元素相对于压缩列表起始地址的偏移量, 占四个字节
+* 压缩列表的元素个数, 占2个字节
+* 压缩列表存储的元素, 可以是字节数组或者整数, 长度不限
+* 压缩列表的结尾, 占1个字节, 恒为0xFF
+
+压缩列表元素的编码结构由previous_entry_length、encoding、content字段组成, 分别表示:
+* 前一个元素的字节长度, 占1个或者5个字节
+* 当前元素的编码
+* 数据内容
+
+## 4.2 结构体
+
+结构体zlentry表示解码之后的压缩列表元素
+```c
+typedef struct zlentry {
+	unsigned int prevrawlensize;
+	unsigned int prevrawlen;
+
+	unsigned int lensize;
+	unsigned int len;
+	unsigned char encoding;
+
+	unsigned int headersize;
+
+	unsigned char *p;
+} zlentry;
+```
+
+## 4.4 连锁更新
+
+连锁更新是指更新某一元素导致其后元素长度发生变化, 进而影响再后面的元素, 连锁更新会导致多次重新分配内存及数据复制, 效率很低.
+
+
+# 5. 字典
+
+## 5.1 基本概念
+
+当一个数组中数据非常海量时, 通过头指针+偏移量的方式也能以O(1)的时间复杂度定位到数据所在的内存地址, 然后进行对应的操作. c数组的这个特征, 显然是解决海量数据存储并使其能快速读取的不二之选.
+
+键的类型可以为字符串、整数、浮点型等, 键的类型是客户端感知的, 而redis服务端收到客户端发送过来的键实际上都为字符串.
+
+键值对中值的类型可为string、hash、list、set、sortedset, 可以将数组元素中的val字段设置为指针, 通过指针指向值所在的任意内存.
+
+## 5.2 redis字典的实现
+
+redis字典实现依赖的数据结构主要包含了三部分: 字典、hash表、hash表节点. 字典中嵌入了两个hash表, hash表中的table字段存放着hash表节点, hash表节点对应存储的是键值对.
+
+```c
+typedef struct dict {
+    dictType ＊type;           /＊该字典对应的特定操作函数＊/
+    void ＊privdata;           /＊该字典依赖的数据＊/
+    dictht ht[2];              /＊Hash表，键值对存储在此＊/
+    long rehashidx;            /＊rehash标识。默认值为-1，代表没进行rehash操作；不为-1时，
+                                代表正进行rehash操作，存储的值表示Hash表ht[0]的rehash操
+                                作进行到了哪个索引值＊/
+    unsigned long iterators;   /＊ 当前运行的迭代器数＊/
+} dict;
+
+typedef struct dictht {
+	dictEntry ＊＊table;            /＊指针数组，用于存储键值对＊/
+	unsigned long size;            /＊table数组的大小＊/
+	unsigned long sizemask;        /＊掩码 = size -1 ＊/
+	unsigned long used;            /＊table数组已存元素个数，包含next单链表的数据＊/
+} dictht;
+
+typedef struct dictEntry {
+void ＊key;                      /＊存储键＊/
+union {
+    void ＊val;                  /＊db.dict中的val＊/
+    uint64_t u64;
+    int64_t s64;                /＊db.expires中存储过期时间＊/
+    double d;
+} v;                            /＊值，是个联合体＊/
+struct dictEntry ＊next;        /＊当Hash冲突时，指向冲突的元素，形成单链表＊/
+} dictEntry;
+```
+redis字典(dict)这个数据结构, 除了主数据库的k-v数据存储外, 还有很多其他地方会用到. 例如redis的哨兵模式, 就用字典存储管理所有的master节点及slave节点. 数据库中键值对的值为hash类型时, 存储这个hash类型的值也是用的字典. 在不同的应用中, 字典中的键值对形态都可能不同, 而dictType结构体, 则是为了实现各种形态的字典而抽象出来的一组操作函数.
+
+dict中ht字段是一个大小为2的数组, 该数组存储的元素类型为dictht, 一般情况下只会使用ht[0], 只有当该字典扩容、缩容需要进行rehash的时, 才会用到ht[1].
+
+dict中rehashidx字段用来标识该字典是否在进行rehash, 没进行rehash时, 值为-1, 否则, 该值表示hash表ht[0]执行rehash到了哪个元素, 并记录下该元素的数组下标值.
+
+iterators字段, 用来记录当前运行的安全迭代器数, 当有安全迭代器绑定到该字段时, 会暂停rehash操作.
+
+redis可以提供高性能的线上服务, 而且是单进程模式, 当数据控量级过大, 整个rehash过程将非常缓慢. 渐进式rehash在执行插入、删除、查找、修改等操作时, 都先判断当前字典rehash操作是否在运行中, 若是则进行rehash操作, 除这些操作之外, 当服务空闲时, 如果当前字典也需要进行rehash操作, 会进行批量rehash操作. 分而治之.
+
+## 5.4 字典的遍历
+
+遍历redis整个数据库主要有全遍历(例如keys命令)、间断遍历(hscan命令).全遍历一次命令执行就遍历完整个数据库, 间断遍历每次命令执行只取部分数据, 分多次遍历.
+
+迭代器是在容器上遍访的接口, 设计人员无须关心容器的内容, 调用迭代器固定的接口就可遍历数据.
+
+迭代过程中, 如果发生了数据增删, 导致字典出发rehash操作, 或迭代开始时字典正在进行rehash操作, 从而导致一条数据可能多次遍历到, redis的迭代器实现解决了这个问题.
+```c
+typedef struct dictIterator {
+    dict ＊d;                //迭代的字典
+    int index;              //当前迭代到Hash表中哪个索引值
+    int table, safe;        //table用于表示当前正在迭代的Hash表，即ht[0]与ht[1], safe用于表
+                            示当前创建的是否为安全迭代器
+    dictEntry ＊entry, ＊nextEntry; //当前节点，下一个节点
+    long long fingerprint; //字典的指纹，当字典未发生改变时，该值不变，发生改变时则值也随着改变
+} dictIterator;
+```
+
+普通迭代器迭代字典中数据时, 会对迭代器中finglerprint字段的值作严格的校验, 来保证迭代过程中字典结构不发生任何变化, 确保读取出的数据不出现重复.
+
+安全迭代器确保读取数据的准确性, 不是通过限制字典的部分操作来实现的, 而是通过限制rehash的进行来确保数据的准确性, 因此迭代过程中可以对字典进行增删查改等操作.如果当前字典有安全迭代器进行, 则不进行渐进式rehash操作, rehash操作暂停, 字典中数据就不会被重复遍历, 由此确保了读取数据的准确性.
+
+间断遍历中,游标变更算法:
+```c
+    v |= ～m0;
+    v = rev(v); // 二进制逆转
+    v++;
+    v = rev(v); //二进制逆转
+```
+保证在以下三种情况下:
+从迭代开始到结束, 散列表没有进行rehash操作; 从迭代开始到结束, 散列表进行了扩容或缩容操作, 且恰好为两次迭代剪个齐肩完成了rehash操作; 从迭代开始到结束, 某次或某几次迭代时散列表在进行rehash操作.
+不遗漏也不重复迭代数据
