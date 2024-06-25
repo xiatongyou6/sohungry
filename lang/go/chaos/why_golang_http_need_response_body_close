@@ -1,9 +1,0 @@
-# 如果没有调用response.Body.Close()会造成goroutine泄漏, 进而导致内存泄露.
-
-主goroutine在复用链接或创建一个新的连接的时候, 同时开启两个goroutine, 分别写request和读取response. readLoop和writeLoop在写入请求并获取response后, 并没有跳出for循环, 而继续阻塞在下一次for循环的select语句里. 所以, 两个函数所在的goroutine并没有运行结束, 导致goroutine数量持续增加导致内存持续增加. 
-
-close的主要逻辑是向channel中写入信号, 让readLoop退出阻塞, 终止readLoop的goroutine, readLoop退出的时候, 关闭channel进而让writeLoop退出阻塞, 终止writeLoop的goroutine.
-
-# 参考
-
-https://segmentfault.com/a/1190000020086816
